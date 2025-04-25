@@ -1,0 +1,31 @@
+schemaVersion: 2.0.0
+metadata:
+  name: go-todolist
+  version: 1.0.0
+  displayName: Go Todo List Application
+  description: A simple todo list application written in Go using the Gin framework
+components:
+  - name: dev
+    container:
+      image: public.ecr.aws/aws-mde/universal-image:latest
+      memoryLimit: 2Gi
+      mountSources: true
+      endpoints:
+        - name: http-8080
+          targetPort: 8080
+commands:
+  - id: install
+    exec:
+      component: dev
+      commandLine: "go mod download"
+      workingDir: ${PROJECT_SOURCE}
+  - id: build
+    exec:
+      component: dev
+      commandLine: "go build -o todolist"
+      workingDir: ${PROJECT_SOURCE}
+  - id: test
+    exec:
+      component: dev
+      commandLine: "go test ./..."
+      workingDir: ${PROJECT_SOURCE}
