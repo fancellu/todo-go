@@ -13,6 +13,7 @@ This is a simple web-based Golang Todo List application using GIN that allows yo
 *   **Dark/Light Theme:** Switch between a light and a dark theme for comfortable viewing.
 *   **Validation:** The app has validation to prevent adding empty tasks.
 *   **Press Enter to Commit:** In the edit task input field, you can press Enter to commit.
+*   **No Server State:** Each visitor's tasks are kept in a cookie, so the server stores nothing and lists are private per browser.
 *   **Single Binary:** Templates and static assets are embedded with `go:embed`, so the built binary runs from anywhere.
 
 ## Screenshots
@@ -59,7 +60,7 @@ The project is set up for Vercel's Go runtime: `vercel.json` selects the `go` fr
 
 Or import the GitHub repository in the Vercel dashboard.
 
-Tasks are held in memory. On Vercel they are shared by everyone using the same instance, and they reset whenever the instance is recycled.
+Tasks are stored in a cookie in each visitor's browser, not on the server. So every visitor gets their own private list, and it doesn't matter that Vercel may run several copies of the app at once. Lists are limited by the cookie size, to roughly 25 to 50 tasks depending on title length.
 
 ## How to Use
 

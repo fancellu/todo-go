@@ -17,23 +17,24 @@ Everything in this app could be written with plain `net/http`. Gin just removes 
 
 The server renders full HTML pages. There is no separate frontend app and no JSON API. The browser either submits a normal form or makes a small `fetch` call, then reloads the page to see the result.
 
+The server keeps **no state**. Each visitor's task list lives in a cookie in their own browser, which is sent along with every request. The handler reads the list from the cookie, changes it, and sends the updated list back in a `Set-Cookie` header.
+
 ```mermaid
 sequenceDiagram
-    participant B as Browser
+    participant B as Browser (holds the todos cookie)
     participant G as Gin router
     participant H as Handler function
-    participant S as tasks slice (memory)
 
-    B->>G: GET /
+    B->>G: GET / (Cookie: todos=...)
     G->>H: indexHandler
-    H->>S: read tasks
+    Note over H: loadTasks decodes the cookie
     H-->>B: index.html filled in with tasks
 
-    B->>G: PUT /task/3 (fetch from tasks.js)
+    B->>G: PUT /task/3 (fetch from tasks.js, Cookie: todos=...)
     G->>H: updateTaskHandler
-    H->>S: set Completed = true
-    H-->>B: 303 redirect to /
-    Note over B: tasks.js calls location.reload(),<br/>which does GET / again
+    Note over H: loadTasks, set Completed = true, saveTasks
+    H-->>B: 303 redirect to / + Set-Cookie: todos=...
+    Note over B: tasks.js calls location.reload(),<br/>which does GET / again with the new cookie
 ```
 
 ## Startup: `main()`
@@ -114,7 +115,7 @@ Each line connects an HTTP method and a URL pattern to a function. `:id` is a **
 | DELETE | `/task/:id` | `deleteTaskHandler` | Trash button (`tasks.js`) | 303 redirect to `/` |
 | GET | `/static/*` | built in (`StaticFS`) | `<script>` tags | The JS file |
 
-When something goes wrong, the handlers send `error.html` instead: 400 for a bad ID or empty title, 404 for an unknown task.
+When something goes wrong, the handlers send `error.html` instead: 400 for a bad ID, an empty title, or a list too big to fit in the cookie; 404 for an unknown task.
 
 ### 5. Starting the server
 
@@ -126,31 +127,37 @@ if err := router.Run(addr); err != nil {
 
 `router.Run` starts listening and blocks forever, serving requests. It only returns if something fails, for example if the port is already in use.
 
-## In-memory state
+## Where the tasks live: a cookie
 
 ```go
-var (
-    mu     sync.RWMutex
-    tasks  []Task
-    nextID int
-)
-
 type Task struct {
     ID        int    `json:"id"`
     Title     string `json:"title"`
     Completed bool   `json:"completed"`
 }
+
+type taskList struct {
+    NextID int    `json:"next"`
+    Tasks  []Task `json:"tasks"`
+}
 ```
 
-There is no database. All tasks live in the `tasks` slice (Go's growable array), and `nextID` hands out IDs. Stopping the server loses everything.
+There is no database, and nothing is stored on the server. A `taskList` holds one visitor's tasks (in a slice, Go's growable array) plus `NextID`, the ID the next new task gets. The `json:"..."` tags set the field names when the list is turned into JSON.
 
-Gin handles each request on its own goroutine, Go's lightweight thread, so two requests can run at the same moment. `mu` is a read/write lock that stops them from corrupting the slice:
+**Why not just keep the tasks in a variable on the server?** The first version did exactly that, and it worked locally. On Vercel it broke in a confusing way: Vercel runs several copies of the app at once, starting more when traffic arrives and stopping idle ones. Each copy had its own separate list in memory, so refreshing the page showed a different list depending on which copy answered. Keeping the list in the visitor's browser means it doesn't matter which copy handles the request. As a bonus, every visitor gets a private list.
 
-- `mu.RLock()` is for handlers that only **read** (`indexHandler`, `getTaskHandler`). Many readers can hold it at once.
-- `mu.Lock()` is for handlers that **change** tasks. It waits until nobody else holds the lock.
-- `defer mu.Unlock()` runs the unlock automatically when the function returns, whichever `return` it leaves through.
+Two helpers move the list in and out of the cookie:
 
-The `json:"..."` tags on `Task` are unused today. They would control the field names if a task were ever sent as JSON.
+- **`loadTasks(c)`** reads the `todos` cookie with `c.Cookie`, base64-decodes it, and parses the JSON. A missing or garbled cookie just gives an empty list, so a visitor can never break the page by editing their cookie.
+- **`saveTasks(c, tl)`** does the reverse: JSON, then base64 (cookie values can't contain the quotes and commas JSON uses), then a `Set-Cookie` header. The cookie is:
+  - `HttpOnly`: page JavaScript can't read it. Only the browser and server see it.
+  - `SameSite=Lax`: other websites can't make the browser send it along with their own requests.
+  - `Secure` when served over HTTPS, as on Vercel.
+  - Kept for one year (`MaxAge`).
+
+Browsers cap a cookie at about 4 KB, so `saveTasks` refuses a list whose encoded form is over 3,800 bytes and shows "Your list is full" instead. That's roughly 25 to 50 tasks, depending on title length. It returns `false` in that case, so the handler knows not to redirect.
+
+Because each request carries its own list, handlers never share data, and the code needs no locks.
 
 ## The handlers
 
@@ -163,13 +170,13 @@ Every handler has the same signature, `func(c *gin.Context)`. These are the `Con
 | `c.HTML(status, "name.html", data)` | Renders a template with `data` and sends it |
 | `c.Redirect(http.StatusSeeOther, "/")` | Sends a 303 telling the browser to go to `/` |
 
-Three small helpers keep the handlers short:
+Alongside `loadTasks` and `saveTasks`, three small helpers keep the handlers short:
 
 - **`parseID(c)`** converts `:id` to an `int` with `strconv.Atoi`. If that fails (`/task/abc`), it sends a 400 error page and returns `ok == false`, and the handler just returns.
-- **`findTask(id)`** returns the slice index of the task with that ID, or `-1`. The caller must already hold the lock.
+- **`findTask(tasks, id)`** returns the slice index of the task with that ID, or `-1`.
 - **`renderError(c, status, message)`** renders `error.html` with a message.
 
-The handlers then follow one pattern: parse the input, take the lock, find the task, change it, redirect. For example:
+The handlers then follow one pattern: parse the input, load the list, find the task, change it, save the list, redirect. For example:
 
 ```go
 func updateTaskHandler(c *gin.Context) {
@@ -180,18 +187,20 @@ func updateTaskHandler(c *gin.Context) {
 
     completed := c.PostForm("completed") == "true"
 
-    mu.Lock()
-    defer mu.Unlock()
-
-    i := findTask(id)
+    tl := loadTasks(c)
+    i := findTask(tl.Tasks, id)
     if i < 0 {
         renderError(c, http.StatusNotFound, "Task not found")
         return
     }
-    tasks[i].Completed = completed
-    c.Redirect(http.StatusSeeOther, "/")
+    tl.Tasks[i].Completed = completed
+    if saveTasks(c, tl) {
+        c.Redirect(http.StatusSeeOther, "/")
+    }
 }
 ```
+
+`createTaskHandler` has one extra step. Before appending, it makes sure `NextID` is higher than every existing ID, because a visitor could hand-edit their cookie and cause duplicate IDs.
 
 **Why redirect instead of returning a page?** This is the *Post/Redirect/Get* pattern. After a change, the server says "now go and GET `/`" (303 See Other). The browser ends up on a normal page load, so pressing refresh never resubmits the change.
 
@@ -201,7 +210,7 @@ func updateTaskHandler(c *gin.Context) {
 
 ```go
 c.HTML(http.StatusOK, "index.html", gin.H{
-    "tasks": tasks,
+    "tasks": loadTasks(c).Tasks,
 })
 ```
 
@@ -233,7 +242,7 @@ The relevant part of [templates/index.html](templates/index.html):
 
 The other two templates:
 
-- [templates/task.html](templates/task.html) is rendered by `getTaskHandler` with `gin.H{"task": tasks[i]}`, so it uses `.task.Title`, `.task.Completed`, and so on.
+- [templates/task.html](templates/task.html) is rendered by `getTaskHandler` with `gin.H{"task": tl.Tasks[i]}`, so it uses `.task.Title`, `.task.Completed`, and so on.
 - [templates/error.html](templates/error.html) is rendered by `renderError` and shows `{{.message}}`.
 
 Styling comes from Bootstrap and Bootstrap Icons, loaded from a CDN in each template's `<head>`. The Go code doesn't involve them at all.
@@ -279,6 +288,7 @@ function toggleTaskCompletion(taskId, completed) {
 
 - The task ID comes from the button's `data-task-id` attribute, which the template filled in.
 - The body is sent in the same `name=value` format a form uses, so the handler can read it with `c.PostForm("completed")`.
+- `fetch` sends the `todos` cookie automatically for requests to the same site, and stores the updated cookie from the response, just as a page load would.
 - `fetch` follows the server's 303 redirect by itself (it fetches `/` behind the scenes), sees a 200, and the script reloads the page so the new state appears.
 
 The pencil button doesn't call the server. It hides the title `<span>` and shows the hidden `<input>` and save button that the template already put in the row. Pressing Enter or clicking save calls `updateTaskTitle`, which sends `PUT /task/:id/title`. The trash button sends `DELETE /task/:id`.
@@ -291,22 +301,23 @@ The saved theme is first applied by a tiny inline `<script>` in `index.html`'s `
 
 ## One click, start to finish: completing a task
 
-1. The browser loads `/`. `indexHandler` renders the list, and the task with ID 3 gets a button with `data-task-id="3" data-completed="false"`.
+1. The browser loads `/`, sending its `todos` cookie. `indexHandler` decodes the list and renders it, and the task with ID 3 gets a button with `data-task-id="3" data-completed="false"`.
 2. You click the check button. `tasks.js` reads those attributes and calls `toggleTaskCompletion("3", "true")`.
-3. That sends `PUT /task/3` with the body `completed=true`.
+3. That sends `PUT /task/3` with the body `completed=true`, and the cookie.
 4. Gin matches the route `PUT /task/:id` and calls `updateTaskHandler`.
-5. The handler parses `3`, takes the write lock, sets `tasks[i].Completed = true`, and responds `303 See Other` with `Location: /`.
-6. `fetch` follows the redirect and gets a 200, so `tasks.js` calls `window.location.reload()`.
-7. The reload is a fresh `GET /`. `indexHandler` renders again, and now `{{if .Completed}}` is true, so the title has a strikethrough.
+5. The handler parses `3`, loads the list from the cookie, and sets `Completed = true` on that task. It responds `303 See Other` with `Location: /` and a `Set-Cookie` header carrying the updated list.
+6. The browser stores the new cookie. `fetch` follows the redirect and gets a 200, so `tasks.js` calls `window.location.reload()`.
+7. The reload is a fresh `GET /` with the new cookie. `indexHandler` renders again, and now `{{if .Completed}}` is true, so the title has a strikethrough.
 
 ## Known quirks
 
 - **The task detail page's checkbox doesn't work.** The form in `task.html` posts to `/task/:id` with `method="POST"`, but only `PUT` is routed for that path, so ticking it returns a 404. (The hidden `_method=PUT` field is a convention some frameworks use to fake a `PUT`. Gin doesn't support it out of the box.)
-- **Tasks are global.** Everyone using the same server sees and edits the same list. On Vercel, the list resets whenever the instance is recycled.
+- **Tasks belong to one browser.** Another browser, a private window, or clearing cookies starts with an empty list. Lists are also capped by the roughly 4 KB cookie limit.
+- **Edits that overflow the cookie fail silently.** Renaming a task to something very long can push the list over the limit. The add form shows the "list is full" error page, but the rename goes through `fetch`, and `tasks.js` ignores error responses, so nothing visible happens.
 
 ## Where to go next
 
 - [Gin documentation](https://gin-gonic.com/en/docs/)
 - [`html/template`](https://pkg.go.dev/html/template), the template language used in `templates/`
 - [`embed`](https://pkg.go.dev/embed), how `//go:embed` works
-- [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex)
+- [`http.Cookie`](https://pkg.go.dev/net/http#Cookie) and [MDN: Using HTTP cookies](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies)
