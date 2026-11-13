@@ -2,6 +2,8 @@
 
 This is a simple web-based Golang Todo List application using GIN that allows you to manage your tasks efficiently.
 
+**Live demo:** [https://todo-go-theta.vercel.app/](https://todo-go-theta.vercel.app/)
+
 ![Todo list in light theme](docs/screenshots/light.png)
 
 ## Features
