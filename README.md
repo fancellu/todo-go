@@ -2,6 +2,8 @@
 
 This is a simple web-based Golang Todo List application using GIN that allows you to manage your tasks efficiently.
 
+![Todo list in light theme](docs/screenshots/light.png)
+
 ## Features
 
 *   **Add Tasks:** Easily add new tasks to your todo list.
@@ -11,15 +13,53 @@ This is a simple web-based Golang Todo List application using GIN that allows yo
 *   **Dark/Light Theme:** Switch between a light and a dark theme for comfortable viewing.
 *   **Validation:** The app has validation to prevent adding empty tasks.
 *   **Press Enter to Commit:** In the edit task input field, you can press Enter to commit.
+*   **Single Binary:** Templates and static assets are embedded with `go:embed`, so the built binary runs from anywhere.
+
+## Screenshots
+
+| Dark theme | Editing a task |
+| --- | --- |
+| ![Todo list in dark theme](docs/screenshots/dark.png) | ![Editing a task title inline](docs/screenshots/edit.png) |
+
+## How It Works
+
+New to Gin? [MAIN.md](MAIN.md) walks through how `main.go` serves the pages, renders the templates and talks to the JavaScript.
 
 ## How to Run
 
-1.  **Install Go:** If you don't have Go installed, download and install it from the official Go website: [https://go.dev/](https://go.dev/)
+1.  **Install Go:** You need Go 1.27 or newer. Download it from the official Go website: [https://go.dev/](https://go.dev/)
 2.  **Run the App:** Open your terminal and navigate to the project directory. Then, run the following command:
 ```
-    go run main.go
+    go run .
 ```
 3.  **Open in Browser:** Open your web browser and go to `http://localhost:8080` to access the application.
+
+The listen address can be changed with `-addr` (for example `go run . -addr :9000`). If the `PORT` environment variable is set, it takes precedence.
+
+To build a standalone binary:
+```
+    go build -o todolist .
+```
+
+That gives a binary of roughly 30 MB. For a much smaller one (about 15 MB), strip the debug info and leave out Gin's MessagePack support, which this app doesn't use:
+
+```
+    go build -tags nomsgpack -ldflags "-s -w" -o todolist .
+```
+
+`-s -w` removes the symbol table and debug info (you lose debugger support, but panics still print stack traces). `nomsgpack` is a Gin build tag that drops its MessagePack encoder.
+
+## Deploying to Vercel
+
+The project is set up for Vercel's Go runtime: `vercel.json` selects the `go` framework preset, which builds `main.go` and runs it as a server listening on `PORT`.
+
+```
+    npx vercel deploy
+```
+
+Or import the GitHub repository in the Vercel dashboard.
+
+Tasks are held in memory. On Vercel they are shared by everyone using the same instance, and they reset whenever the instance is recycled.
 
 ## How to Use
 
