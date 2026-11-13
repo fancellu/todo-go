@@ -4,18 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Todo List</title>
+    <script>
+        // Apply the saved theme before the first paint, so dark mode doesn't flash white on load.
+        try {
+            if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+        } catch (e) {}
+    </script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.9/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-yEPZ7jP9S0QKiUQ0m3jjsO4ProIW7wvR9gXkI7JOGa2XVsw53Yke2bsdkBbjmmiX" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.2/font/bootstrap-icons.min.css" integrity="sha384-nWN3KqaaVcbEsCjLSV+2jMjh62Iny/+mN3srM8TZeM8N6aj7eDl5wwYggjAJ4/sJ" crossorigin="anonymous">
     <style>
-        body.dark {
+        html.dark {
+            color-scheme: dark;
+            background-color: #343a40;
+        }
+        html.dark body {
             background-color: #343a40;
             color: #f8f9fa;
         }
-        body.dark .list-group-item {
+        html.dark .list-group-item {
             background-color: #495057;
             color: #f8f9fa;
         }
-        body.dark #theme-toggle {
+        html.dark #theme-toggle {
             --bs-btn-color: #f8f9fa;
             --bs-btn-border-color: #adb5bd;
         }

@@ -285,7 +285,9 @@ The pencil button doesn't call the server. It hides the title `<span>` and shows
 
 ### [theme.js](static/js/theme.js): light/dark theme
 
-This one never talks to the server. It adds or removes a `dark` class on `<body>`, which the `body.dark` CSS rules in `index.html` style. It remembers the choice in `localStorage` so the theme survives a reload.
+This one never talks to the server. It adds or removes a `dark` class on the `<html>` element, which the `html.dark` CSS rules in `index.html` style. It remembers the choice in `localStorage` so the theme survives a reload.
+
+The saved theme is first applied by a tiny inline `<script>` in `index.html`'s `<head>`, not by `theme.js`. Scripts at the bottom of the page only run after the browser has started drawing. On a slow connection the page would flash white before switching to dark. The `<head>` script runs before the first paint, and `theme.js` then only syncs the sun/moon icon and handles clicks.
 
 ## One click, start to finish: completing a task
 
